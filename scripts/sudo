@@ -1,0 +1,112 @@
+#!/bin/sh
+
+sysexit_EX_USAGE=64;
+sysexit_EX_OSERR=71;
+
+usage() {
+	echo "Usage: $0 [options] [command if needed]" >&2;
+	exit 1;
+}
+if test $# -lt 1; then usage; fi;
+
+name="$0";
+die() {
+	echo "[fatal] $name: $1" >&2;
+	exit "$2";
+}
+debug() {
+	if test -n "$SUDO_DEBUG"; then echo "[debug] $1" >&2; fi;
+}
+usagefail() {
+	die "usage error: $1" $sysexit_EX_USAGE;
+}
+optnoarg() {
+	usagefail "expected argument $2 following option $1";
+}
+
+
+# sudo will by default interpret arguments starting with "-"
+# (and any following data argument) as options,
+# and any non-option command starts the command list.
+# this emulation will do the same, and will bail on unrecognised options.
+
+# option defaults
+uid="";
+gid="";
+
+testisoption() {
+	opt="$1";
+	# stupid echo interpreting dash arguments...
+	echo ".$opt" | grep -q '^.-';
+	e=$?;
+	if test $e -eq 0; then {
+		debug "$opt was an option";
+	}; else {
+		debug "$opt was NOT an option";
+	}; fi;
+	return $e;
+}
+while true; do {
+	# there should always be non-option arguments left.
+	if test $# -lt 1; then {
+		usagefail "at least one non-option argument required";
+	}; fi;
+	# if current argument is non-option, leave $@ intact as command
+	if ! testisoption "$1"; then break;
+	else {
+		# do the same if the option is --, but consume it.
+		debug "handling option $1";
+		if test "$1" == "--"; then {
+			shift;
+			break;
+		}; else {
+			# handle options and loop back to beginning
+			case "$1" in
+				-u) {
+					if test $# -lt 2; then optnoarg "-u" "uid";
+					else {
+						uid="$2";
+						shift 2;
+					}; fi;
+				};;
+				-g) {
+					if test $# -lt 2; then optnoarg "-g" "gid";
+					else {
+						gid="$2";
+						shift 2;
+					}; fi;
+				};;
+				*) {
+					usagefail "unimplemented option $1";
+				};;
+			esac;
+		}; fi;
+	}; fi;
+}; done;
+
+# infer default user and group arguments.
+if test -z "$uid"; then {
+	# if uid is not set, sudo typically defaults to the root user.
+	# however, the sudo man page for the -g (--group) option adds a wrinkle:
+	# if the -g option is set and -u is not,
+	# user to run as defaults to the invoking user instead.
+	if test -z "$gid"; then {
+		# in this case, both uid and gid are unset.
+		uid="root";
+		gid="root";
+	}; else {
+		uid=$(id -nu) || die "determining current user for -g without -u failed" $sysexit_EX_OSERR;
+	}; fi;
+}; else {
+	# if uid is set, gid defaults to uid's primary group unless overriden.
+	if test -z "$gid"; then {
+		gid=$(id -ng "$uid") || die "determining default group for user $uid failed" $sysexit_EX_OSERR;
+	}; fi;
+}; fi;
+
+# any remaining non-option args at this point are a command to execute.
+# note that the sudoask script handles PATH lookup.
+debug "uid: $uid";
+debug "gid: $gid";
+debug "cmd: $*";
+exec sudoask "$uid" "$gid" "$@" || die "sudoask invocation failed!" $sysexit_EX_OSERR;
