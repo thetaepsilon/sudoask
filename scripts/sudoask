@@ -1,0 +1,49 @@
+#!/bin/sh
+if test $# -lt 3; then echo "Usage: $0 uid gid program [args...]"; exit 1; fi
+
+die() {
+	echo "[fatal] $0: $1" >&2;
+	exit 2;
+}
+
+testenv() {
+	envvar="$1";
+	eval "test -n \"\$$envvar\"";
+	if test $? -ne 0; then die "$envvar not set"; fi;
+}
+
+uid="$1";
+gid="$2";
+path=$(which "$3") || exit $?;
+shift 3;
+
+# don't run unless certain env vars are set.
+testenv SUDOASK_RUNTIME_DIR;
+testenv SUDOASK_CONFIG_DIR;
+
+ask="$SUDOASK_RUNTIME_DIR/request";
+presetdir="$SUDOASK_CONFIG_DIR/presets";
+
+# create hash of command and look up preset responses to this command.
+# if a preset exists, command output and exit status are output from the preset,
+# without actually invoking the command.
+# useful for some stupid scripts which call sudo repeatedly to "stop the timeout".
+hash=$(echo "$uid" "$path" "$@" | sha256sum | sed -e "s/ .*$//g");
+cmddir="$presetdir/$hash";
+# try to read presets, but fail gracefully if they don't exist.
+if test -d "$cmddir"; then {
+	stdout="$cmddir/stdout"
+	test -f "$stdout" && cat "$stdout";
+	stderr="$cmddir/stderr"
+	test -f "$stderr" && cat "$stderr" >&2;
+	status=$(cat "$cmddir/status" 2>/dev/null) || status=0;
+	exit $status;
+}; fi
+
+echo "No preset for hash $hash";
+echo "uid $uid gid $gid hash $hash cmd $path" "$@" > "$ask";
+
+reply="$SUDOASK_RUNTIME_DIR/reply";
+read -r answer < "$reply";
+
+exit "$answer";
